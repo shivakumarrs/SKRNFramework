@@ -1,0 +1,22 @@
+{
+  "name": "skrnframework",
+  "version": "1.0.0",
+  "description": "My First FrameWork",
+  "main": "node server",
+  "scripts": {
+    "test": "Hi All"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shivakumarrs/SKRNFramework.git"
+  },
+  "keywords": [
+    "Frameworik"
+  ],
+  "author": "Shiva Kumar",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/shivakumarrs/SKRNFramework/issues"
+  },
+  "homepage": "https://github.com/shivakumarrs/SKRNFramework#readme"
+}
