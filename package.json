@@ -2,7 +2,7 @@
   "name": "skrnframework",
   "version": "1.0.0",
   "description": "My First FrameWork",
-  "main": "node server",
+  "main": "skrnApplication.js",
   "scripts": {
     "test": "Hi All"
   },
