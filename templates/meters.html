@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>All Meters | Meter Monitor</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #172033; background: #f4f7fb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { padding: 28px max(24px, calc((100vw - 1180px) / 2)); background: #10213d; color: white; display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+    h1 { font-size: 24px; margin: 0 0 5px; }
+    header p { margin: 0; color: #b7c5dc; font-size: 14px; }
+    .header-left { display: flex; align-items: center; justify-content: space-between; gap: 30px; flex: 1; }
+    nav { display: flex; gap: 8px; }
+    nav a { color: #b7c5dc; text-decoration: none; font-size: 14px; padding: 9px 12px; border-radius: 7px; }
+    nav a:hover, nav a.active { background: #263b5b; color: white; }
+    main { max-width: 1180px; margin: 28px auto; padding: 0 24px 40px; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+    .toolbar p { color: #63708a; margin: 0; font-size: 14px; }
+    .card { background: white; border: 1px solid #e5eaf2; border-radius: 12px; box-shadow: 0 3px 12px #1a2e4a0a; }
+    .meter-list { display: grid; gap: 14px; }
+    .meter { padding: 20px; }
+    .meter-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
+    .meter-header h2 { font-size: 17px; margin: 0 0 5px; overflow-wrap: anywhere; }
+    .timestamp { color: #63708a; font-size: 13px; }
+    .meter-tag { flex-shrink: 0; background: #eaf1ff; color: #2455ae; border-radius: 20px; padding: 6px 10px; font-size: 12px; }
+    .measurements { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+    .measurement { padding: 12px; background: #f6f8fc; border-radius: 8px; min-width: 0; }
+    .measurement-name { color: #63708a; font-size: 12px; overflow-wrap: anywhere; }
+    .measurement-value { font-weight: 650; font-size: 18px; margin-top: 5px; overflow-wrap: anywhere; }
+    .empty, .error { color: #63708a; font-size: 14px; padding: 22px; text-align: center; }
+    .error { color: #b42318; }
+    @media (max-width: 650px) { header { align-items: flex-start; flex-direction: column; } .header-left { align-items: flex-start; flex-direction: column; gap: 14px; } .meter-header { flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <div><h1>All meters</h1><p>Every registered meter and its most recent reading</p></div>
+      <nav aria-label="Main navigation"><a href="/">Dashboard</a><a class="active" href="/meters">All meters</a><a href="/meters/add">Add meter</a></nav>
+    </div>
+  </header>
+  <main>
+    <div class="toolbar">
+      <p id="summary">Loading meters…</p>
+      <p>Refreshes automatically every 5 seconds</p>
+    </div>
+    <section id="meter-list" class="meter-list" aria-live="polite">
+      <div class="card empty">Loading meters…</div>
+    </section>
+  </main>
+  <script>
+    const meterList = document.getElementById("meter-list");
+    const summary = document.getElementById("summary");
+
+    function render(data) {
+      summary.textContent = `${data.meter_count} meter${data.meter_count === 1 ? "" : "s"} found`;
+      if (!data.meters.length) {
+        meterList.replaceChildren();
+        const empty = document.createElement("div");
+        empty.className = "card empty";
+        empty.textContent = "No meters are registered yet.";
+        meterList.append(empty);
+        return;
+      }
+      meterList.replaceChildren();
+      data.meters.forEach(meter => {
+        const card = document.createElement("article");
+        card.className = "card meter";
+        const header = document.createElement("div");
+        header.className = "meter-header";
+        const titleGroup = document.createElement("div");
+        const title = document.createElement("h2");
+        title.textContent = meter.display_name;
+        const meterId = document.createElement("div");
+        meterId.className = "timestamp";
+        meterId.textContent = meter.meter_id;
+        const timestamp = document.createElement("div");
+        timestamp.className = "timestamp";
+        timestamp.textContent = meter.latest_reading
+          ? `Latest reading: ${new Date(meter.latest_reading).toLocaleString()}`
+          : "No readings received yet";
+        titleGroup.append(title, meterId);
+        if (meter.location) {
+          const location = document.createElement("div");
+          location.className = "timestamp";
+          location.textContent = meter.location;
+          titleGroup.append(location);
+        }
+        titleGroup.append(timestamp);
+        const tag = document.createElement("span");
+        tag.className = "meter-tag";
+        tag.textContent = meter.latest_reading
+          ? `${meter.measurements.length} measurement${meter.measurements.length === 1 ? "" : "s"}`
+          : "Awaiting readings";
+        header.append(titleGroup, tag);
+        const measurements = document.createElement("div");
+        measurements.className = "measurements";
+        meter.measurements.forEach(measurement => {
+          const item = document.createElement("div");
+          item.className = "measurement";
+          const name = document.createElement("div");
+          name.className = "measurement-name";
+          name.textContent = measurement.name;
+          const value = document.createElement("div");
+          value.className = "measurement-value";
+          value.textContent = Number(measurement.value).toPrecision(6);
+          item.append(name, value);
+          measurements.append(item);
+        });
+        card.append(header, measurements);
+        meterList.append(card);
+      });
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch("/api/meters");
+        if (!response.ok) throw new Error(`Meter request failed (${response.status})`);
+        render(await response.json());
+        summary.className = "";
+      } catch (error) {
+        summary.textContent = error.message;
+        summary.className = "error";
+      }
+    }
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

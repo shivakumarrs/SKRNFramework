@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Meter Monitor</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #172033; background: #f4f7fb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { padding: 28px max(24px, calc((100vw - 1180px) / 2)); background: #10213d; color: white; display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+    h1 { font-size: 24px; margin: 0 0 5px; }
+    header p { margin: 0; color: #b7c5dc; font-size: 14px; }
+    .header-left { display: flex; align-items: center; justify-content: space-between; gap: 30px; flex: 1; }
+    nav { display: flex; gap: 8px; }
+    nav a { color: #b7c5dc; text-decoration: none; font-size: 14px; padding: 9px 12px; border-radius: 7px; }
+    nav a:hover, nav a.active { background: #263b5b; color: white; }
+    main { max-width: 1180px; margin: 28px auto; padding: 0 24px 40px; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+    .toolbar p { color: #63708a; margin: 0; font-size: 14px; }
+    select { border: 1px solid #d8deea; border-radius: 8px; padding: 10px 12px; color: #172033; background: white; font: inherit; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 20px; }
+    .card, .panel { background: white; border: 1px solid #e5eaf2; border-radius: 12px; box-shadow: 0 3px 12px #1a2e4a0a; }
+    .card { padding: 18px 20px; }
+    .label { font-size: 13px; color: #63708a; }
+    .value { font-size: 28px; font-weight: 700; margin-top: 7px; overflow-wrap: anywhere; }
+    .panel { padding: 20px; margin-bottom: 18px; }
+    .panel h2 { font-size: 17px; margin: 0 0 18px; }
+    .metric { border-top: 1px solid #edf0f5; padding-top: 16px; margin-top: 16px; }
+    .metric:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+    .metric-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+    .metric-head strong { font-size: 14px; }
+    .metric-head span { color: #63708a; font-size: 13px; }
+    canvas { display: block; width: 100%; height: 190px; }
+    .status { font-size: 13px; white-space: nowrap; color: #d8e3f3; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #f2b84b; margin-right: 7px; }
+    .dot.connected { background: #45d39a; }
+    .empty, .error { color: #63708a; font-size: 14px; padding: 12px 0; }
+    .error { color: #b42318; }
+    @media (max-width: 650px) { header { align-items: flex-start; flex-direction: column; } .header-left { align-items: flex-start; flex-direction: column; gap: 14px; } .cards { grid-template-columns: 1fr; } .toolbar { align-items: flex-start; flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <div><h1>Meter Monitor</h1><p>Live readings, reports, and measurement trends</p></div>
+      <nav aria-label="Main navigation"><a class="active" href="/">Dashboard</a><a href="/meters">All meters</a><a href="/meters/add">Add meter</a></nav>
+    </div>
+    <div class="status"><span id="mqtt-dot" class="dot"></span><span id="mqtt-status">Checking MQTT…</span></div>
+  </header>
+  <main>
+    <div class="toolbar">
+      <p id="updated">Loading meter data…</p>
+      <label for="period">Time range&nbsp;
+        <select id="period">
+          <option value="24h">Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+          <option value="all">All available</option>
+        </select>
+      </label>
+    </div>
+    <section class="cards">
+      <div class="card"><div class="label">Readings in range</div><div class="value" id="reading-count">—</div></div>
+      <div class="card"><div class="label">Meters reporting</div><div class="value" id="meter-count">—</div></div>
+      <div class="card"><div class="label">Latest reading (UTC)</div><div class="value" id="latest-reading" style="font-size:19px">—</div></div>
+    </section>
+    <section class="panel">
+      <h2>Measurement trends</h2>
+      <div id="trends" class="empty">Waiting for readings…</div>
+    </section>
+    <section class="panel">
+      <h2>Report summary</h2>
+      <div id="report" class="empty">Waiting for readings…</div>
+    </section>
+  </main>
+  <script>
+    const palette = ["#2864dc", "#10a37f", "#dc7b28", "#9857cc", "#d34d68", "#268c9a"];
+    const period = document.getElementById("period");
+
+    function drawChart(canvas, points, color) {
+      const ratio = window.devicePixelRatio || 1;
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      canvas.width = width * ratio;
+      canvas.height = height * ratio;
+      const context = canvas.getContext("2d");
+      context.scale(ratio, ratio);
+      const pad = { left: 48, right: 12, top: 12, bottom: 28 };
+      const plotWidth = width - pad.left - pad.right;
+      const plotHeight = height - pad.top - pad.bottom;
+      const values = points.map(point => point.value);
+      let min = Math.min(...values);
+      let max = Math.max(...values);
+      if (min === max) { min -= Math.abs(min) * 0.05 || 1; max += Math.abs(max) * 0.05 || 1; }
+      const x = index => pad.left + (points.length < 2 ? plotWidth / 2 : index * plotWidth / (points.length - 1));
+      const y = value => pad.top + (max - value) / (max - min) * plotHeight;
+      context.font = "11px system-ui";
+      context.fillStyle = "#748098";
+      context.strokeStyle = "#e8edf4";
+      context.lineWidth = 1;
+      for (let i = 0; i <= 3; i++) {
+        const value = max - (max - min) * i / 3;
+        const lineY = pad.top + plotHeight * i / 3;
+        context.beginPath(); context.moveTo(pad.left, lineY); context.lineTo(width - pad.right, lineY); context.stroke();
+        context.fillText(Number(value.toPrecision(4)).toString(), 0, lineY + 4);
+      }
+      context.strokeStyle = color;
+      context.lineWidth = 2;
+      context.beginPath();
+      points.forEach((point, index) => index ? context.lineTo(x(index), y(point.value)) : context.moveTo(x(index), y(point.value)));
+      context.stroke();
+      context.fillStyle = "#748098";
+      const first = new Date(points[0].timestamp).toLocaleString();
+      const last = new Date(points[points.length - 1].timestamp).toLocaleString();
+      context.fillText(first, pad.left, height - 5);
+      const lastWidth = context.measureText(last).width;
+      context.fillText(last, Math.max(pad.left, width - pad.right - lastWidth), height - 5);
+    }
+
+    function render(data) {
+      document.getElementById("reading-count").textContent = data.reading_count.toLocaleString();
+      document.getElementById("meter-count").textContent = data.meter_count.toLocaleString();
+      document.getElementById("latest-reading").textContent = data.latest_reading
+        ? new Date(data.latest_reading).toLocaleString() : "No readings yet";
+      document.getElementById("updated").textContent = `Showing ${period.options[period.selectedIndex].text.toLowerCase()}`;
+      const mqtt = data.mqtt;
+      document.getElementById("mqtt-status").textContent = mqtt.configured
+        ? `${mqtt.message}${mqtt.topic ? ` · ${mqtt.topic}` : ""}` : "MQTT not configured";
+      document.getElementById("mqtt-dot").classList.toggle("connected", mqtt.connected);
+      const trends = document.getElementById("trends");
+      const report = document.getElementById("report");
+      if (!data.metrics.length) {
+        trends.className = report.className = "empty";
+        trends.textContent = report.textContent = "No readings in this time range. Configure MQTT and publish a meter reading to get started.";
+        return;
+      }
+      trends.className = report.className = "";
+      trends.replaceChildren();
+      report.replaceChildren();
+      data.metrics.forEach((metric, index) => {
+        const color = palette[index % palette.length];
+        const chart = document.createElement("div");
+        chart.className = "metric";
+        const head = document.createElement("div");
+        head.className = "metric-head";
+        const name = document.createElement("strong");
+        name.textContent = metric.name;
+        const values = document.createElement("span");
+        values.textContent = `${metric.points.length} samples`;
+        head.append(name, values);
+        const canvas = document.createElement("canvas");
+        canvas.setAttribute("aria-label", `${metric.name} trend`);
+        chart.append(head, canvas);
+        trends.append(chart);
+        drawChart(canvas, metric.points, color);
+
+        const summary = document.createElement("div");
+        summary.className = "metric";
+        const summaryHead = document.createElement("div");
+        summaryHead.className = "metric-head";
+        const summaryName = document.createElement("strong");
+        summaryName.textContent = metric.name;
+        const summaryValues = document.createElement("span");
+        summaryValues.textContent = `Average ${metric.average.toPrecision(5)} · Latest ${metric.latest.toPrecision(5)}`;
+        summaryHead.append(summaryName, summaryValues);
+        summary.append(summaryHead);
+        report.append(summary);
+      });
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch(`/api/dashboard?period=${encodeURIComponent(period.value)}`);
+        if (!response.ok) throw new Error(`Dashboard request failed (${response.status})`);
+        render(await response.json());
+      } catch (error) {
+        document.getElementById("updated").textContent = error.message;
+        document.getElementById("updated").className = "error";
+      }
+    }
+    period.addEventListener("change", refresh);
+    refresh();
+    setInterval(refresh, 5000);
+    window.addEventListener("resize", refresh);
+  </script>
+</body>
+</html>
