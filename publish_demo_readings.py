@@ -2,6 +2,7 @@ import argparse
 import json
 import math
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,16 +36,38 @@ def build_demo_reading(meter_id, sample_index, timestamp=None):
     }
 
 
-def publish_demo_cycle(client, database_path, sample_index, timestamp=None):
+def publish_demo_cycle(
+    client, database_path, sample_index, timestamp=None, connected=None
+):
     meters = list_meters(database_path)
     for meter in meters:
         meter_id = meter["meter_id"]
         reading = build_demo_reading(meter_id, sample_index, timestamp)
         topic = f"meters/{quote(meter_id, safe='')}/readings"
-        info = client.publish(topic, json.dumps(reading), qos=1)
-        info.wait_for_publish(timeout=5)
-        if not info.is_published():
-            raise RuntimeError(f"Timed out publishing a reading for {meter_id}")
+        while True:
+            if connected is not None and not connected.wait(timeout=30):
+                print(f"Waiting for MQTT broker before publishing for {meter_id}...")
+                continue
+            try:
+                info = client.publish(topic, json.dumps(reading), qos=1)
+                if info.rc != mqtt.MQTT_ERR_SUCCESS:
+                    if connected is not None and not connected.is_set():
+                        continue
+                    raise RuntimeError(
+                        f"Could not publish a reading for {meter_id}: result {info.rc}"
+                    )
+                info.wait_for_publish(timeout=5)
+                if not info.is_published():
+                    if connected is not None and not connected.is_set():
+                        continue
+                    raise RuntimeError(f"Timed out publishing a reading for {meter_id}")
+            except RuntimeError:
+                if connected is None or client.is_connected():
+                    raise
+                connected.clear()
+                print(f"MQTT disconnected while publishing for {meter_id}; retrying...")
+                continue
+            break
         print(f"{reading['timestamp']}  {meter_id}  {reading['measurements']['active_power_kw']:.3f} kW")
     return len(meters)
 
@@ -83,6 +106,23 @@ def main():
     if username:
         client.username_pw_set(username, os.getenv("MQTT_PASSWORD", ""))
 
+    connected = threading.Event()
+
+    def on_connect(_client, _userdata, _flags, reason_code, _properties):
+        if reason_code.is_failure:
+            print(f"MQTT broker rejected the publisher connection: {reason_code}")
+            connected.clear()
+            return
+        connected.set()
+        print(f"Connected to MQTT broker at {host}:{port}.")
+
+    def on_disconnect(_client, _userdata, _disconnect_flags, reason_code, _properties):
+        connected.clear()
+        print(f"Disconnected from MQTT broker ({reason_code}); waiting to reconnect.")
+
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
     client.connect(host, port, keepalive=60)
     client.loop_start()
     sample_index = 0
@@ -94,7 +134,7 @@ def main():
 
     try:
         while True:
-            publish_demo_cycle(client, database_path, sample_index)
+            publish_demo_cycle(client, database_path, sample_index, connected=connected)
             sample_index += 1
             time.sleep(args.interval)
     except KeyboardInterrupt:

@@ -1,13 +1,19 @@
 import json
+import threading
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
+
+import paho.mqtt.client as mqtt
 
 from publish_demo_readings import publish_demo_cycle
 from storage import initialize_database, list_meters, register_meter
 
 
 class PublishedMessage:
+    rc = mqtt.MQTT_ERR_SUCCESS
+
     def wait_for_publish(self, timeout):
         self.timeout = timeout
 
@@ -18,12 +24,16 @@ class PublishedMessage:
 class FakeMqttClient:
     def __init__(self):
         self.messages = []
+        self.connected = True
 
     def publish(self, topic, payload, qos):
         self.messages.append(
             {"topic": topic, "payload": json.loads(payload), "qos": qos}
         )
         return PublishedMessage()
+
+    def is_connected(self):
+        return self.connected
 
 
 class DemoPublisherTests(unittest.TestCase):
@@ -91,6 +101,48 @@ class DemoPublisherTests(unittest.TestCase):
         )
 
         self.assertEqual(client.messages[0]["topic"], "meters/floor%2Fone/readings")
+
+    def test_publish_retries_after_connection_drops(self):
+        register_meter(self.database_path, {"meter_id": "meter-reconnect"})
+        client = FakeMqttClient()
+        connected = threading.Event()
+        disconnected = threading.Event()
+        connected.set()
+        publish = client.publish
+        calls = 0
+
+        def disconnect_once(topic, payload, qos):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                client.connected = False
+                connected.clear()
+                disconnected.set()
+                raise RuntimeError("The client is not currently connected.")
+            return publish(topic, payload, qos)
+
+        client.publish = disconnect_once
+
+        def reconnect():
+            disconnected.wait(timeout=2)
+            client.connected = True
+            connected.set()
+
+        reconnect_thread = threading.Thread(target=reconnect)
+        reconnect_thread.start()
+        with patch("publish_demo_readings.time.sleep", side_effect=lambda _delay: None):
+            count = publish_demo_cycle(
+                client,
+                self.database_path,
+                sample_index=0,
+                timestamp="2026-10-23T12:00:00Z",
+                connected=connected,
+            )
+        reconnect_thread.join(timeout=2)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(calls, 2)
+        self.assertEqual(len(client.messages), 1)
 
 
 if __name__ == "__main__":
